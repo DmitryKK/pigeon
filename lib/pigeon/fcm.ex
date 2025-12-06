@@ -237,6 +237,13 @@ defmodule Pigeon.FCM do
         else
           {:error, reason}
         end
+
+      {:error, reason, _meta} ->
+        if tries > 0 do
+          connect_socket(config, tries - 1)
+        else
+          {:error, reason}
+        end
     end
   end
 end
