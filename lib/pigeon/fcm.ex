@@ -104,7 +104,7 @@ defmodule Pigeon.FCM do
   for more details.
   """
 
-  @max_retries 3
+  @max_retries 5
 
   defstruct config: nil,
             queue: Pigeon.HTTP.RequestQueue.new(),
@@ -141,23 +141,24 @@ defmodule Pigeon.FCM do
 
   @impl Pigeon.Adapter
   def handle_push(notification, state) do
-    %{config: config, queue: queue, socket: socket} = state
-    headers = Configurable.push_headers(config, notification, [])
-    payload = Configurable.push_payload(config, notification, [])
-    method = "POST"
-    path = "/v1/projects/#{config.project_id}/messages:send"
+    %{socket: socket, config: config} = state
 
-    {:ok, socket, ref} =
-      Mint.HTTP.request(socket, method, path, headers, payload)
+    Mint.HTTP.open?(socket)
+    |> if do
+      do_request!(notification, state)
+    else
+      case connect_socket(config) do
+        {:ok, socket} ->
+          Configurable.schedule_ping(config)
+          state = %{state | socket: socket}
 
-    new_q = RequestQueue.add(queue, ref, notification)
+          do_request!(notification, state)
 
-    state =
-      state
-      |> Map.put(:socket, socket)
-      |> Map.put(:queue, new_q)
-
-    {:noreply, state}
+        {:error, reason} ->
+          # TODO: in this case we lose the notification
+          {:stop, reason}
+      end
+    end
   end
 
   @impl Pigeon.Adapter
@@ -200,6 +201,26 @@ defmodule Pigeon.FCM do
         |> Map.put(:response, Error.parse(error))
         |> process_on_response()
     end
+  end
+
+  defp do_request!(notification, state) do
+    %{config: config, queue: queue, socket: socket} = state
+    headers = Configurable.push_headers(config, notification, [])
+    payload = Configurable.push_payload(config, notification, [])
+    method = "POST"
+    path = "/v1/projects/#{config.project_id}/messages:send"
+
+    {:ok, socket, ref} =
+      Mint.HTTP.request(socket, method, path, headers, payload)
+
+    new_q = RequestQueue.add(queue, ref, notification)
+
+    state =
+      state
+      |> Map.put(:socket, socket)
+      |> Map.put(:queue, new_q)
+
+    {:noreply, state}
   end
 
   @spec connect_socket(Config.t()) :: {:ok, Mint.HTTP2.t()} | {:error, term()}
